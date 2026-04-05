@@ -6,6 +6,8 @@
 // @author      ricardofauch
 // @match       https://*.plemiona.pl/game.php*screen=main*
 // @match       https://*.tribalwars.co.uk/game.php*screen=main*
+// @updateURL    https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/wasilewski.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/wasilewski.js
 // @license     MIT
 // ==/UserScript==
 
