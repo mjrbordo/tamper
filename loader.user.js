@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LOADER — Plemiona Scripts
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Ładuje wszystkie skrypty z mjrbordo/tamper
 // @author       mjrbordo
 // @match        https://*.plemiona.pl/*
