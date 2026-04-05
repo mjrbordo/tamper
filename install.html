@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plemiona Scripts — Instalacja</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --parch: #f2e8d0;
+            --parch-dark: #e8d9b5;
+            --ink: #2a1a0a;
+            --ink-light: #5c3d1e;
+            --gold: #b8860b;
+            --gold-bright: #d4a017;
+            --red: #8b1a1a;
+            --green: #2d5a1b;
+            --border: #8b6914;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #1a0f05;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+            font-family: 'Crimson Text', Georgia, serif;
+            background-image:
+                radial-gradient(ellipse at 20% 20%, rgba(184,134,11,0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(139,26,26,0.06) 0%, transparent 50%);
+        }
+
+        .scroll {
+            background: var(--parch);
+            max-width: 640px;
+            width: 100%;
+            position: relative;
+            box-shadow:
+                0 0 0 1px var(--border),
+                0 0 0 4px rgba(139,105,20,0.3),
+                0 20px 60px rgba(0,0,0,0.8),
+                inset 0 0 40px rgba(139,105,20,0.1);
+            background-image:
+                url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
+                linear-gradient(180deg, #ede0c0 0%, #f2e8d0 15%, #f0e5ca 85%, #e8d5aa 100%);
+        }
+
+        /* Scroll top/bottom decorations */
+        .scroll::before, .scroll::after {
+            content: '';
+            display: block;
+            height: 28px;
+            background: linear-gradient(180deg, #7a5c1e 0%, #b8860b 40%, #8b6914 60%, #5c3d0e 100%);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            position: relative;
+        }
+        .scroll::before {
+            border-radius: 4px 4px 0 0;
+        }
+        .scroll::after {
+            border-radius: 0 0 4px 4px;
+        }
+
+        .scroll-inner {
+            padding: 36px 48px 40px;
+        }
+
+        /* Ornamental divider */
+        .ornament {
+            text-align: center;
+            color: var(--gold);
+            font-size: 20px;
+            letter-spacing: 8px;
+            margin: 6px 0 20px;
+            opacity: 0.7;
+        }
+
+        .crest {
+            text-align: center;
+            margin-bottom: 4px;
+        }
+        .crest svg {
+            width: 56px;
+            height: 56px;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+        }
+
+        h1 {
+            font-family: 'Cinzel', serif;
+            font-weight: 900;
+            font-size: 26px;
+            color: var(--ink);
+            text-align: center;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            line-height: 1.2;
+            margin-bottom: 4px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--ink-light);
+            font-size: 15px;
+            font-style: italic;
+            margin-bottom: 24px;
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 0 0 24px;
+            opacity: 0.5;
+        }
+        .divider-ornament {
+            text-align: center;
+            margin: -12px 0 20px;
+        }
+        .divider-ornament span {
+            background: var(--parch);
+            padding: 0 12px;
+            color: var(--gold);
+            font-size: 16px;
+        }
+
+        /* Prereq box */
+        .prereq {
+            background: rgba(139,105,20,0.1);
+            border: 1px solid rgba(139,105,20,0.4);
+            border-left: 3px solid var(--gold);
+            padding: 12px 16px;
+            margin-bottom: 24px;
+            font-size: 15px;
+            color: var(--ink-light);
+            line-height: 1.5;
+        }
+        .prereq strong {
+            color: var(--ink);
+            font-weight: 600;
+        }
+        .prereq a {
+            color: var(--red);
+            text-decoration: underline;
+        }
+
+        /* Script cards */
+        .scripts-list {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            margin-bottom: 28px;
+        }
+
+        .script-card {
+            border: 1px solid var(--border);
+            background: linear-gradient(135deg, rgba(255,255,255,0.4) 0%, rgba(139,105,20,0.05) 100%);
+            padding: 16px 18px;
+            position: relative;
+            transition: box-shadow 0.2s;
+        }
+        .script-card:hover {
+            box-shadow: 0 4px 16px rgba(139,105,20,0.2);
+        }
+
+        .script-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 3px;
+            height: 100%;
+            background: var(--gold-bright);
+        }
+
+        .script-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 6px;
+        }
+
+        .script-name {
+            font-family: 'Cinzel', serif;
+            font-weight: 700;
+            font-size: 14px;
+            color: var(--ink);
+            letter-spacing: 1px;
+        }
+
+        .script-version {
+            font-size: 11px;
+            color: var(--ink-light);
+            background: rgba(139,105,20,0.15);
+            padding: 2px 8px;
+            border-radius: 2px;
+            white-space: nowrap;
+            font-family: monospace;
+        }
+
+        .script-desc {
+            font-size: 14px;
+            color: var(--ink-light);
+            font-style: italic;
+            line-height: 1.4;
+            margin-bottom: 12px;
+        }
+
+        .install-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: linear-gradient(180deg, #3a6b24 0%, #2d5a1b 100%);
+            color: #d4edbd;
+            text-decoration: none;
+            padding: 9px 18px;
+            font-family: 'Cinzel', serif;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            border: 1px solid #4a8b2e;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+            transition: all 0.15s;
+            cursor: pointer;
+        }
+        .install-btn:hover {
+            background: linear-gradient(180deg, #4a8b2e 0%, #3a6b24 100%);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+            transform: translateY(-1px);
+        }
+        .install-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+        }
+
+        .install-btn svg {
+            width: 14px; height: 14px;
+        }
+
+        /* Footer */
+        .footer {
+            border-top: 1px solid rgba(139,105,20,0.3);
+            padding-top: 16px;
+            text-align: center;
+            font-size: 13px;
+            color: var(--ink-light);
+            font-style: italic;
+            line-height: 1.6;
+        }
+        .footer a {
+            color: var(--red);
+            text-decoration: none;
+        }
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        .step {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px; height: 20px;
+            background: var(--gold);
+            color: #fff;
+            font-size: 11px;
+            font-family: 'Cinzel', serif;
+            font-weight: 700;
+            border-radius: 50%;
+            margin-right: 6px;
+            flex-shrink: 0;
+        }
+
+        .steps {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 20px;
+            font-size: 15px;
+            color: var(--ink);
+            line-height: 1.5;
+        }
+        .steps > div {
+            display: flex;
+            align-items: flex-start;
+        }
+    </style>
+</head>
+<body>
+<div class="scroll">
+    <div class="scroll-inner">
+
+        <div class="crest">
+            <svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <polygon points="28,4 52,16 52,40 28,52 4,40 4,16" fill="#b8860b" opacity="0.15" stroke="#b8860b" stroke-width="1.5"/>
+                <polygon points="28,10 46,19 46,37 28,46 10,37 10,19" fill="none" stroke="#b8860b" stroke-width="1" opacity="0.6"/>
+                <text x="28" y="34" text-anchor="middle" font-family="Cinzel,serif" font-size="18" font-weight="900" fill="#2a1a0a">⚔</text>
+            </svg>
+        </div>
+
+        <h1>Plemiona Scripts</h1>
+        <p class="subtitle">Zbiór skryptów automatyzujących rozgrywkę</p>
+
+        <div class="ornament">— ✦ —</div>
+
+        <div class="prereq">
+            <strong>Wymaganie:</strong> Rozszerzenie
+            <a href="https://www.tampermonkey.net/" target="_blank">Tampermonkey</a>
+            musi być zainstalowane w przeglądarce przed kliknięciem przycisków poniżej.
+        </div>
+
+        <div class="steps">
+            <div><span class="step">1</span> Zainstaluj Tampermonkey w swojej przeglądarce</div>
+            <div><span class="step">2</span> Kliknij przycisk przy każdym skrypcie który chcesz zainstalować</div>
+            <div><span class="step">3</span> Potwierdź instalację w oknie Tampermonkey</div>
+        </div>
+
+        <hr class="divider">
+        <div class="divider-ornament"><span>⚜ Skrypty ⚜</span></div>
+
+        <div class="scripts-list">
+
+            <div class="script-card">
+                <div class="script-header">
+                    <span class="script-name">WASILEWSKI</span>
+                    <span class="script-version">v1.7.2</span>
+                </div>
+                <p class="script-desc">Auto Builder — automatyczna budowa według kolejki, Szablon Eko, Import MK, odbiór nagród, Smart Wait.</p>
+                <a class="install-btn" href="https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/wasilewski.user.js">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 1.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM7.25 5v4.19L5.03 7l-1.06 1.06L8 12.12l4.03-4.06L10.97 7 8.75 9.19V5h-1.5z"/></svg>
+                    Zainstaluj skrypt
+                </a>
+            </div>
+
+            <!-- Tu dodawaj kolejne skrypty w tym samym formacie:
+
+            <div class="script-card">
+                <div class="script-header">
+                    <span class="script-name">NAZWA SKRYPTU</span>
+                    <span class="script-version">v1.0</span>
+                </div>
+                <p class="script-desc">Opis skryptu.</p>
+                <a class="install-btn" href="https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/nazwapliku.user.js">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 1.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM7.25 5v4.19L5.03 7l-1.06 1.06L8 12.12l4.03-4.06L10.97 7 8.75 9.19V5h-1.5z"/></svg>
+                    Zainstaluj skrypt
+                </a>
+            </div>
+
+            -->
+
+        </div>
+
+        <div class="footer">
+            Skrypty aktualizują się automatycznie przez Tampermonkey.<br>
+            Źródło: <a href="https://github.com/mjrbordo/tamper" target="_blank">github.com/mjrbordo/tamper</a>
+        </div>
+
+    </div>
+</div>
+</body>
+</html>
