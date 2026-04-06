@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        WASILEWSKI
 // @namespace   http://tampermonkey.net/
-// @version     1.7.2
+// @version     1.7.3
 // @description Auto Builder + Szablon Eko + Import MK + Nagrody + Smart Wait
 // @author      ricardofauch
 // @match       https://*.plemiona.pl/game.php*screen=main*
@@ -15,7 +15,12 @@
     'use strict';
 
     const DEBUG = true;
-    const STORAGE_KEY = 'tribalWarsBuilderConfig';
+    function getStorageKey() {
+    const match = window.location.search.match(/[?&]village=(\d+)/);
+    const villageId = match ? match[1] : 'unknown';
+    return `tribalWarsBuilderConfig_v${villageId}`;
+}
+const STORAGE_KEY = getStorageKey();
     const FALLBACK_INTERVAL = 30 * 60 * 1000;
 
     // =====================================================================
