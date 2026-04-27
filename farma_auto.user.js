@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Farm
 // @namespace    http://tampermonkey.net/
-// @version      1.0.1
+// @version      1.1.0
 // @description  Automatyczne farmienie w Plemionach — wybór szablonu wg wyniku ostatniego ataku
 // @updateURL    https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/farma_auto.user.js
 // @downloadURL  https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/farma_auto.user.js
