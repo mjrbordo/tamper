@@ -3,8 +3,8 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.1.0
 // @description  Automatyczne farmienie w Plemionach — wybór szablonu wg wyniku ostatniego ataku
-// @updateURL    https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/farma_auto.user.js
-// @downloadURL  https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/farma_auto.user.js
+// @updateURL    https://raw.githubusercontent.com/mjrbordo/tamper/main/farma_auto.user.js
+// @downloadURL  https://raw.githubusercontent.com/mjrbordo/tamper/main/farma_auto.user.js
 // @author       Bordo
 // @match        https://*.plemiona.pl/*screen=am_farm*
 // @match        https://*.tribalwars.net/*screen=am_farm*
