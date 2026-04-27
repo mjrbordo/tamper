@@ -36,6 +36,10 @@
 
         // Opóźnienie po załadowaniu strony przed startem (ms)
         pageLoadDelay: 2000,
+
+        // Zakres czasu auto-odświeżania (minuty)
+        minReloadMin: 15,
+        maxReloadMin: 50,
     };
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -250,6 +254,8 @@
         const templateOnNotFull = cfg.templateOnNotFull ?? CONFIG.templateOnNotFull;
         const minInterval       = cfg.minInterval       ?? CONFIG.minInterval;
         const randomExtra       = cfg.randomExtra       ?? CONFIG.randomExtra;
+        const minReloadMin      = cfg.minReloadMin      ?? CONFIG.minReloadMin;
+        const maxReloadMin      = cfg.maxReloadMin      ?? CONFIG.maxReloadMin;
         const autoOn            = !!state.autoEnabled;
 
         const p = document.createElement('div');
@@ -300,6 +306,22 @@
             <span>+Losowy max</span>
             <input type="number" id="af_random_extra" min="0" max="9999" value="${randomExtra}">`;
         p.appendChild(rowRandom);
+
+        // Auto-odświeżanie
+        addSec(p, 'Auto-reload (min):');
+        const rowReloadMin = document.createElement('div');
+        rowReloadMin.className = 'row';
+        rowReloadMin.innerHTML = `
+            <span>Od</span>
+            <input type="number" id="af_reload_min" min="1" max="999" value="${minReloadMin}">`;
+        p.appendChild(rowReloadMin);
+
+        const rowReloadMax = document.createElement('div');
+        rowReloadMax.className = 'row';
+        rowReloadMax.innerHTML = `
+            <span>Do</span>
+            <input type="number" id="af_reload_max" min="1" max="999" value="${maxReloadMin}">`;
+        p.appendChild(rowReloadMax);
 
         // Przyciski
         const btnRow = document.createElement('div');
@@ -353,11 +375,16 @@
         const minInt     = Math.max(200, parseInt(document.getElementById('af_min_interval')?.value) || 200);
         const randExtra  = Math.max(0,   parseInt(document.getElementById('af_random_extra')?.value)  || 200);
 
+        const reloadMin = Math.max(1, parseInt(document.getElementById('af_reload_min')?.value) || CONFIG.minReloadMin);
+        const reloadMax = Math.max(reloadMin, parseInt(document.getElementById('af_reload_max')?.value) || CONFIG.maxReloadMin);
+
         const cfg = {
             templateOnFull:    tplFull    || null,
             templateOnNotFull: tplNotFull || null,
             minInterval:  minInt,
             randomExtra:  randExtra,
+            minReloadMin: reloadMin,
+            maxReloadMin: reloadMax,
         };
 
         const state = loadState();
@@ -459,8 +486,8 @@
         }
 
         // Wszystkie strony przetworzone — wróć na stronę 1 po losowym czasie
-        const minMs  = 15 * 60 * 1000;
-        const maxMs  = 50 * 60 * 1000;
+        const minMs  = cfg.minReloadMin * 60 * 1000;
+        const maxMs  = cfg.maxReloadMin * 60 * 1000;
         const waitMs = minMs + Math.floor(Math.random() * (maxMs - minMs));
 
         const page1Url = new URL(window.location.href);
