@@ -388,16 +388,27 @@
         const result = await runFarm(cfg);
 
         updateProgress(1, 1);
-        setStatus(`Wysłano: ${result.sent} | Pominięto: ${result.skipped} | W drodze: ${result.disabled}`);
-
         running = false;
-        if (btnOnce) btnOnce.disabled = false;
 
-        const state = loadState();
-        if (btnAuto) {
-            btnAuto.disabled = false;
-            if (!state.autoEnabled) btnAuto.disabled = false;
+        // Paginacja: jeśli wysłano ataki i jest następna strona — przejdź dalej
+        const nextUrl = findNextPageUrl();
+        if (result.sent > 0 && nextUrl) {
+            const st = loadState();
+            st.continuingRun = true;
+            saveState(st);
+            setStatus(`Wysłano: ${result.sent} | przechodzę na następną stronę...`);
+            setTimeout(() => { window.location.href = nextUrl; }, 1000);
+            return;
         }
+
+        // Ostatnia strona lub brak wojska — zakończ
+        const st = loadState();
+        st.continuingRun = false;
+        saveState(st);
+
+        setStatus(`Wysłano: ${result.sent} | Pominięto: ${result.skipped} | W drodze: ${result.disabled}`);
+        if (btnOnce) btnOnce.disabled = false;
+        if (btnAuto) btnAuto.disabled = false;
     }
 
     function toggleAuto() {
@@ -439,20 +450,41 @@
         running = false;
         if (btnOnce) btnOnce.disabled = false;
 
-        // Losowy czas odświeżania 8–30 minut
-        const minMs  = 15  * 60 * 1000;
+        // Paginacja: jeśli wysłano ataki i jest następna strona — przejdź od razu
+        const nextUrl = findNextPageUrl();
+        if (result.sent > 0 && nextUrl) {
+            setStatus(`Wysłano: ${result.sent} | przechodzę na następną stronę...`);
+            autoTimer = setTimeout(() => { window.location.href = nextUrl; }, 1000);
+            return;
+        }
+
+        // Wszystkie strony przetworzone — wróć na stronę 1 po losowym czasie
+        const minMs  = 15 * 60 * 1000;
         const maxMs  = 50 * 60 * 1000;
         const waitMs = minMs + Math.floor(Math.random() * (maxMs - minMs));
+
+        const page1Url = new URL(window.location.href);
+        page1Url.searchParams.delete('page');
 
         const reloadAt = msToTime(Date.now() + waitMs);
         setStatus(`Wysłano: ${result.sent} | reload o ${reloadAt}`);
 
-        autoTimer = setTimeout(() => window.location.reload(), waitMs);
+        autoTimer = setTimeout(() => { window.location.href = page1Url.toString(); }, waitMs);
     }
 
     function msToTime(ts) {
         const d = new Date(ts);
         return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+    }
+
+    function findNextPageUrl() {
+        // Aktualna strona: <strong class="paged-nav-item">
+        // Następne strony:  <a class="paged-nav-item" href="...&Farm_page=N">
+        const items = Array.from(document.querySelectorAll('.paged-nav-item'));
+        const currentIdx = items.findIndex(el => el.tagName === 'STRONG');
+        if (currentIdx === -1) return null;
+        const next = items[currentIdx + 1];
+        return (next && next.tagName === 'A') ? next.href : null;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -475,10 +507,15 @@
         const rows = document.querySelectorAll('tr[id^="village_"]');
         setStatus(`Wiosek na liście: ${rows.length}`);
 
-        // Jeśli auto było włączone — wznów po przeładowaniu
+        // Wznów po przeładowaniu strony
         const state = loadState();
         if (state.autoEnabled) {
             scheduleNextRun();
+        } else if (state.continuingRun) {
+            // "Wyślij raz" kontynuuje przez kolejne strony
+            state.continuingRun = false;
+            saveState(state);
+            runOnce();
         }
     }
 
