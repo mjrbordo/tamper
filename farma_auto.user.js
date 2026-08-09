@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Auto Farm
+// @name         Auto Farm V3
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
-// @description  Automatyczne farmienie w Plemionach — wybór szablonu wg wyniku ostatniego ataku
+// @version      3.1.0
+// @description  Automatyczne farmienie w Plemionach — szablon wg wyniku ostatniego ataku, rotacja po zapamiętanych wioskach grupy BEZ zmiany aktywnej grupy w grze, stop przy braku wojska
 // @updateURL    https://raw.githubusercontent.com/mjrbordo/tamper/main/farma_auto.user.js
 // @downloadURL  https://raw.githubusercontent.com/mjrbordo/tamper/main/farma_auto.user.js
 // @author       Bordo
@@ -15,36 +15,20 @@
     'use strict';
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  KONFIGURACJA
+    //  KONFIGURACJA (domyślne — nadpisywane z UI/localStorage)
     // ═══════════════════════════════════════════════════════════════════════════
 
     const CONFIG = {
-        // Szablon dla wioski gdy ostatni atak wrócił PEŁNY (pojemność wojsk była limitem)
-        // 'A', 'B', lub null (pomiń wioskę)
         templateOnFull: 'A',
-
-        // Szablon dla wioski gdy ostatni atak wrócił NIEPEŁNY (wioska była pusta/prawie pusta)
-        // 'A', 'B', lub null (pomiń wioskę)
         templateOnNotFull: 'B',
-
-        // Minimalny interwał między kliknięciami (ms) — nie ustawiaj poniżej 200
+        groupId: '0',
         minInterval: 200,
-
-        // Losowy dodatkowy czas do interwału (ms) — humanizuje klikanie
-        // Faktyczny czas = minInterval + random(0, randomExtra)
         randomExtra: 200,
-
-        // Opóźnienie po załadowaniu strony przed startem (ms)
         pageLoadDelay: 2000,
-
-        // Zakres czasu auto-odświeżania (minuty)
+        villageSwitchDelay: 1500,
         minReloadMin: 15,
         maxReloadMin: 50,
     };
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  STAŁE
-    // ═══════════════════════════════════════════════════════════════════════════
 
     const STORAGE_KEY = 'autoFarmTW';
 
@@ -56,54 +40,106 @@
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
         catch { return {}; }
     }
+    function saveState(s) { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+    function patchState(patch) { const s = loadState(); Object.assign(s, patch); saveState(s); return s; }
 
-    function saveState(s) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  GRUPY / WIOSKI — z jawnym pilnowaniem aktywnej grupy
+    //
+    //  KLUCZOWE: każdy request z &group=ID PRZESTAWIA aktywną grupę w grze
+    //  (potwierdzone na plc1). Dlatego:
+    //   - listę wiosek grupy pobieramy RAZ i cache'ujemy w localStorage,
+    //   - po każdym takim pobraniu PRZYWRACAMY group=0,
+    //   - rotacja NIE odpytuje już group=ID — czyta wyłącznie cache.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function activeGroupId() {
+        return String((window.game_data && window.game_data.group_id) || '0');
+    }
+
+    // Przestawia aktywną grupę w grze z powrotem na 0 (Wszystkie).
+    // Wywoływane po każdym pobraniu wiosek grupy, żeby nic nie zostało zaznaczone.
+    async function resetActiveGroup() {
+        try {
+            await fetch('/game.php?screen=overview_villages&mode=combined&group=0', { credentials: 'same-origin' });
+        } catch (e) { console.error('[AutoFarm] resetActiveGroup error:', e); }
+    }
+
+    // Lista grup: [{id, name}] — z <option> strony mode=groups.
+    // Ta strona NIE przyjmuje group=, więc nie zmienia aktywnej grupy.
+    async function fetchGroups() {
+        try {
+            const html = await (await fetch('/game.php?screen=overview_villages&mode=groups', { credentials: 'same-origin' })).text();
+            const groups = [...html.matchAll(/<option[^>]*value=["']?(\d+)["']?[^>]*>([^<]+)<\/option>/g)]
+                .map(m => ({ id: m[1], name: m[2].trim() }))
+                .filter(g => g.id && g.name);
+            const seen = new Set();
+            return groups.filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)));
+        } catch (e) {
+            console.error('[AutoFarm] fetchGroups error:', e);
+            return [];
+        }
+    }
+
+    // Pobiera wioski grupy JEDEN RAZ i od razu przywraca group=0.
+    // group '0' → wszystkie wioski (i tak nie zmienia stanu na nic wybranego).
+    async function fetchGroupVillagesOnce(groupId) {
+        const gid = String(groupId || '0');
+        const url = `/game.php?screen=overview_villages&mode=combined&group=${gid}`;
+        let ids = [];
+        try {
+            const html = await (await fetch(url, { credentials: 'same-origin' })).text();
+            const seen = new Set();
+            for (const m of html.matchAll(/village=(\d+)/g)) {
+                if (!seen.has(m[1])) { seen.add(m[1]); ids.push(m[1]); }
+            }
+        } catch (e) {
+            console.error('[AutoFarm] fetchGroupVillagesOnce error:', e);
+        }
+        // Zawsze wracamy do grupy 0, żeby w grze nic nie było zaznaczone.
+        if (gid !== '0') await resetActiveGroup();
+        return ids;
+    }
+
+    // Zwraca listę wiosek dla wybranej grupy z CACHE.
+    // Jeśli cache pusty lub dla innej grupy — pobiera raz i zapisuje.
+    async function getGroupVillages(groupId, forceRefresh = false) {
+        const gid = String(groupId || '0');
+        const st = loadState();
+        if (!forceRefresh && st.groupVillagesFor === gid && Array.isArray(st.groupVillages) && st.groupVillages.length) {
+            return st.groupVillages;
+        }
+        const ids = await fetchGroupVillagesOnce(gid);
+        patchState({ groupVillages: ids, groupVillagesFor: gid });
+        return ids;
+    }
+
+    function currentVillageId() {
+        return String((window.game_data && window.game_data.village && window.game_data.village.id) || '');
+    }
+
+    // Skok do farmy danej wioski. NIE ustawiamy group w URL.
+    function goToVillageFarm(villageId) {
+        const u = new URL(window.location.href);
+        u.searchParams.set('village', villageId);
+        u.searchParams.set('screen', 'am_farm');
+        u.searchParams.delete('group');
+        u.searchParams.delete('Farm_page');
+        window.location.href = u.toString();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  ANALIZA WIERSZA TABELI
-    //
-    //  Każdy wiersz: <tr id="village_XXXXX">
-    //
-    //  Kolumna 2 (ikona bitwy):
-    //    img[src*="green"]  → Pełna wygrana
-    //    img[src*="blue"]   → Zwiad
-    //    img[src*="yellow"] → Wygrana z stratami
-    //    img[src*="red"]    → Porażka
-    //
-    //  Kolumna 3 (ikona łupu):
-    //    img[src*="0.webp"] data-title zawiera "Częściowy" → wioska była pusta (mało surowców)
-    //    brak ikony lub inna → pełny łup (pojemność wojsk była limitem)
-    //
-    //  Przyciski szablonów:
-    //    a.farm_icon_a  → szablon A
-    //    a.farm_icon_b  → szablon B
-    //    Klasa farm_icon_disabled + start_locked → atak jeszcze w drodze (disabled)
+    //  ANALIZA WIERSZA
     // ═══════════════════════════════════════════════════════════════════════════
 
     function analyzeRow(row) {
-        // Czy atak jest w trakcie (farm_icon_disabled na przycisku A lub B)?
         const anyDisabled = row.querySelector('a.farm_icon_disabled');
-
-        // Ikona łupu — obecność img z "Częściowy" w data-title
-        // Gra używa 0.webp dla "częściowy łup" — wojska wzięły tyle ile mogły,
-        // ale wioska miała więcej (lub wioska była pusta)
-        // data-title: "Częściowy łup: Twoi żołnierze zrabowali wszystko, co udało im się znaleźć"
-        // oznacza że wioska była (prawie) pusta — to NIE jest pełny łup z perspektywy gracza
-        const lootIcon = row.querySelector('td:nth-child(3) img');
+        const lootIcon  = row.querySelector('td:nth-child(3) img');
         const lootTitle = lootIcon ? (lootIcon.getAttribute('data-title') || '') : '';
-
-        // "Pełny łup" = atak wrócił z pełnymi sakwami (pojemność wojsk była limitem, nie zawartość wioski)
-        // Gra pokazuje ikonę 0.webp + "Częściowy łup" gdy wioska była pusta
-        // Brak tej ikony (lub inna) = wojska wróciły pełne
         const isFullHaul = !lootTitle.includes('Częściowy') && !lootTitle.includes('zrabowali wszystko');
-
-        // Ikona bitwy
         const battleIcon = row.querySelector('td:nth-child(2) img');
         const battleSrc  = battleIcon ? (battleIcon.getAttribute('src') || '') : '';
         const isGreenWin = battleSrc.includes('green');
-
         return {
             villageId:  row.id.replace('village_', ''),
             inProgress: !!anyDisabled,
@@ -114,19 +150,27 @@
         };
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  WYBÓR PRZYCISKU
-    // ═══════════════════════════════════════════════════════════════════════════
-
     function chooseButton(analysis, cfg) {
-        if (analysis.inProgress) return null; // atak w trakcie — pomiń
-
+        if (analysis.inProgress) return null;
         const template = analysis.isFullHaul ? cfg.templateOnFull : cfg.templateOnNotFull;
-
         if (!template) return null;
         if (template === 'A') return analysis.btnA;
         if (template === 'B') return analysis.btnB;
         return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  DETEKCJA BRAKU WOJSKA
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function outOfTroops() {
+        const err = document.querySelector('.error_box, #error_box, .autoHideBox.error, .notification.error');
+        if (err && /jednost|wojsk|surowc|not enough|troops|resources/i.test(err.textContent)) return true;
+        const anyRow    = document.querySelector('tr[id^="village_"]');
+        const anyActive = document.querySelector(
+            'a.farm_icon_a:not(.farm_icon_disabled), a.farm_icon_b:not(.farm_icon_disabled)'
+        );
+        return !!anyRow && !anyActive;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -135,15 +179,15 @@
 
     async function runFarm(cfg) {
         const rows = Array.from(document.querySelectorAll('tr[id^="village_"]'));
-
         if (rows.length === 0) {
-            setStatus('Brak wiosek na liście');
-            return { sent: 0, skipped: 0, disabled: 0 };
+            setStatus('Brak celów na liście');
+            return { sent: 0, skipped: 0, disabled: 0, outOfTroops: false };
+        }
+        if (outOfTroops()) {
+            return { sent: 0, skipped: 0, disabled: 0, outOfTroops: true };
         }
 
         let sent = 0, skipped = 0, disabled = 0;
-
-        // Budujemy kolejkę kliknięć najpierw — bez czekania
         const queue = [];
         for (const row of rows) {
             const info = analyzeRow(row);
@@ -151,30 +195,29 @@
             const btn = chooseButton(info, cfg);
             if (!btn) { skipped++; continue; }
             if (btn.classList.contains('farm_icon_disabled')) { disabled++; continue; }
-            queue.push({ btn, info });
+            queue.push({ btn });
         }
 
         setStatus(`Wysyłam ${queue.length} ataków...`);
 
-        // Klikamy z interwałem
-        for (const { btn, info } of queue) {
-            // Sprawdź jeszcze raz czy nie stał się disabled w międzyczasie
+        for (const { btn } of queue) {
             if (btn.classList.contains('farm_icon_disabled') || btn.classList.contains('start_locked')) {
                 disabled++;
                 continue;
             }
-
             btn.click();
             sent++;
-
             updateProgress(sent, queue.length);
 
-            // Interwał: minInterval + losowe extra — humanizuje i respektuje limit serwera
             const waitMs = cfg.minInterval + Math.floor(Math.random() * cfg.randomExtra);
             await delay(waitMs);
-        }
 
-        return { sent, skipped, disabled };
+            if (outOfTroops()) {
+                setStatus('Brak wojska — zatrzymuję wysyłkę w tej wiosce');
+                return { sent, skipped, disabled, outOfTroops: true };
+            }
+        }
+        return { sent, skipped, disabled, outOfTroops: false };
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -185,7 +228,7 @@
         document.head.appendChild(Object.assign(document.createElement('style'), {
             textContent: `
             #afPanel {
-                position: fixed; top: 60px; right: 12px; width: 210px;
+                position: fixed; top: 60px; right: 12px; width: 214px;
                 background: rgba(245,240,225,0.97); border: 1px solid #967444;
                 border-radius: 4px; padding: 8px; z-index: 9999;
                 font-family: Arial, sans-serif; font-size: 11px;
@@ -202,8 +245,9 @@
             }
             #afPanel select {
                 padding: 2px 4px; border: 1px solid #967444; border-radius: 2px;
-                font-size: 11px; background: #fff; color: #333; width: 80px;
+                font-size: 11px; background: #fff; color: #333; width: 88px;
             }
+            #afPanel select#af_group { width: 120px; }
             #afPanel input[type="number"] {
                 width: 64px; padding: 2px 4px; border: 1px solid #967444;
                 border-radius: 2px; font-size: 11px; text-align: center;
@@ -231,14 +275,11 @@
                 height: 100%; width: 0%; background: #4a8020;
                 transition: width .2s; border-radius: 2px;
             }
-            #afPanel .legend {
-                margin-top: 5px; font-size: 10px; color: #784B25;
-                border-top: 1px solid #c8a96e; padding-top: 4px;
-            }
             #afPanel .legend span { display: inline-block; width: 8px; height: 8px;
                 border-radius: 50%; margin-right: 3px; vertical-align: middle; }
             #afPanel .full-dot { background: #4a8020; }
             #afPanel .notfull-dot { background: #c8a020; }
+            #afPanel .hint { font-size: 9px; color: #8a6a3a; margin: 2px 0 0; line-height: 1.2; }
         `}));
     }
 
@@ -246,12 +287,15 @@
     //  UI
     // ═══════════════════════════════════════════════════════════════════════════
 
-    function createPanel() {
+    let GROUPS = [];
+
+    async function createPanel() {
         const state = loadState();
         const cfg   = state.config || {};
 
         const templateOnFull    = cfg.templateOnFull    ?? CONFIG.templateOnFull;
         const templateOnNotFull = cfg.templateOnNotFull ?? CONFIG.templateOnNotFull;
+        const savedGroupId      = String(cfg.groupId ?? CONFIG.groupId);
         const minInterval       = cfg.minInterval       ?? CONFIG.minInterval;
         const randomExtra       = cfg.randomExtra       ?? CONFIG.randomExtra;
         const minReloadMin      = cfg.minReloadMin      ?? CONFIG.minReloadMin;
@@ -262,9 +306,20 @@
         p.id = 'afPanel';
         p.innerHTML = '<h3>Auto Farm</h3>';
 
-        // Reguły szablonów
-        addSec(p, 'Reguły wysyłania:');
+        addSec(p, 'Grupa wiosek:');
+        const rowGroup = document.createElement('div');
+        rowGroup.className = 'row';
+        rowGroup.innerHTML = `
+            <span title="Skrypt zapamięta wioski tej grupy i rotuje tylko po nich. Nie zaznacza grupy w grze.">Grupa</span>
+            <select id="af_group"><option value="0">— ładowanie… —</option></select>`;
+        p.appendChild(rowGroup);
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.id = 'af_group_hint';
+        hint.textContent = '';
+        p.appendChild(hint);
 
+        addSec(p, 'Reguły wysyłania:');
         const rowFull = document.createElement('div');
         rowFull.className = 'row';
         rowFull.innerHTML = `
@@ -272,9 +327,9 @@
                 <span class="legend"><span class="full-dot"></span></span>Pełny łup
             </span>
             <select id="af_tpl_full">
-                <option value="A"  ${templateOnFull === 'A'    ? 'selected' : ''}>Szablon A</option>
-                <option value="B"  ${templateOnFull === 'B'    ? 'selected' : ''}>Szablon B</option>
-                <option value=""   ${templateOnFull === null || templateOnFull === '' ? 'selected' : ''}>Pomiń</option>
+                <option value="A" ${templateOnFull === 'A' ? 'selected' : ''}>Szablon A</option>
+                <option value="B" ${templateOnFull === 'B' ? 'selected' : ''}>Szablon B</option>
+                <option value=""  ${!templateOnFull ? 'selected' : ''}>Pomiń</option>
             </select>`;
         p.appendChild(rowFull);
 
@@ -285,48 +340,40 @@
                 <span class="legend"><span class="notfull-dot"></span></span>Niepełny
             </span>
             <select id="af_tpl_notfull">
-                <option value="A"  ${templateOnNotFull === 'A'    ? 'selected' : ''}>Szablon A</option>
-                <option value="B"  ${templateOnNotFull === 'B'    ? 'selected' : ''}>Szablon B</option>
-                <option value=""   ${templateOnNotFull === null || templateOnNotFull === '' ? 'selected' : ''}>Pomiń</option>
+                <option value="A" ${templateOnNotFull === 'A' ? 'selected' : ''}>Szablon A</option>
+                <option value="B" ${templateOnNotFull === 'B' ? 'selected' : ''}>Szablon B</option>
+                <option value=""  ${!templateOnNotFull ? 'selected' : ''}>Pomiń</option>
             </select>`;
         p.appendChild(rowNotFull);
 
-        // Interwał
         addSec(p, 'Interwał (ms):');
         const rowInterval = document.createElement('div');
         rowInterval.className = 'row';
-        rowInterval.innerHTML = `
-            <span>Min</span>
+        rowInterval.innerHTML = `<span>Min</span>
             <input type="number" id="af_min_interval" min="200" max="9999" value="${minInterval}">`;
         p.appendChild(rowInterval);
 
         const rowRandom = document.createElement('div');
         rowRandom.className = 'row';
-        rowRandom.innerHTML = `
-            <span>+Losowy max</span>
+        rowRandom.innerHTML = `<span>+Losowy max</span>
             <input type="number" id="af_random_extra" min="0" max="9999" value="${randomExtra}">`;
         p.appendChild(rowRandom);
 
-        // Auto-odświeżanie
-        addSec(p, 'Auto-reload (min):');
+        addSec(p, 'Auto-restart cyklu (min):');
         const rowReloadMin = document.createElement('div');
         rowReloadMin.className = 'row';
-        rowReloadMin.innerHTML = `
-            <span>Od</span>
+        rowReloadMin.innerHTML = `<span>Od</span>
             <input type="number" id="af_reload_min" min="1" max="999" value="${minReloadMin}">`;
         p.appendChild(rowReloadMin);
 
         const rowReloadMax = document.createElement('div');
         rowReloadMax.className = 'row';
-        rowReloadMax.innerHTML = `
-            <span>Do</span>
+        rowReloadMax.innerHTML = `<span>Do</span>
             <input type="number" id="af_reload_max" min="1" max="999" value="${maxReloadMin}">`;
         p.appendChild(rowReloadMax);
 
-        // Przyciski
         const btnRow = document.createElement('div');
         btnRow.className = 'btn-row';
-
         const btnOnce = document.createElement('button');
         btnOnce.id = 'afBtnOnce';
         btnOnce.textContent = 'Wyślij raz';
@@ -342,24 +389,48 @@
         p.appendChild(btnRow);
 
         p.appendChild(Object.assign(document.createElement('div'), { id: 'afStatus', textContent: 'Gotowy' }));
-
         const progressWrap = document.createElement('div');
         progressWrap.id = 'afProgress';
         progressWrap.innerHTML = '<div id="afProgressBar"></div>';
         p.appendChild(progressWrap);
 
         document.body.appendChild(p);
+
+        // Zaczytaj grupy do dropdownu
+        GROUPS = await fetchGroups();
+        const sel = document.getElementById('af_group');
+        if (sel) {
+            const opts = ['<option value="0">Wszystkie wioski</option>']
+                .concat(GROUPS.map(g => `<option value="${g.id}" ${g.id === savedGroupId ? 'selected' : ''}>${g.name}</option>`));
+            sel.innerHTML = opts.join('');
+            sel.value = savedGroupId;
+
+            // Zmiana grupy → pobierz i zapamiętaj listę wiosek RAZ, przywróć group=0
+            sel.addEventListener('change', async () => {
+                const gid = sel.value || '0';
+                setGroupHint('pobieram wioski grupy...');
+                patchState({ config: { ...(loadState().config || {}), groupId: gid } });
+                const ids = await getGroupVillages(gid, true); // force refresh przy ręcznej zmianie
+                setGroupHint(`zapamiętano ${ids.length} wiosek`);
+            });
+
+            // Pokaż stan cache dla zapisanej grupy
+            const st = loadState();
+            if (st.groupVillagesFor === savedGroupId && Array.isArray(st.groupVillages)) {
+                setGroupHint(`zapamiętano ${st.groupVillages.length} wiosek`);
+            }
+        }
+    }
+
+    function setGroupHint(txt) {
+        const el = document.getElementById('af_group_hint');
+        if (el) el.textContent = txt;
     }
 
     function addSec(parent, text) {
         parent.appendChild(Object.assign(document.createElement('div'), { className: 'sec', textContent: text }));
     }
-
-    function setStatus(msg) {
-        const el = document.getElementById('afStatus');
-        if (el) el.textContent = msg;
-    }
-
+    function setStatus(msg) { const el = document.getElementById('afStatus'); if (el) el.textContent = msg; }
     function updateProgress(done, total) {
         const bar = document.getElementById('afProgressBar');
         if (bar) bar.style.width = total > 0 ? `${Math.round(done / total * 100)}%` : '0%';
@@ -372,79 +443,121 @@
     function readConfig() {
         const tplFull    = document.getElementById('af_tpl_full')?.value || null;
         const tplNotFull = document.getElementById('af_tpl_notfull')?.value || null;
+        const groupId    = document.getElementById('af_group')?.value || '0';
         const minInt     = Math.max(200, parseInt(document.getElementById('af_min_interval')?.value) || 200);
         const randExtra  = Math.max(0,   parseInt(document.getElementById('af_random_extra')?.value)  || 200);
-
-        const reloadMin = Math.max(1, parseInt(document.getElementById('af_reload_min')?.value) || CONFIG.minReloadMin);
-        const reloadMax = Math.max(reloadMin, parseInt(document.getElementById('af_reload_max')?.value) || CONFIG.maxReloadMin);
+        const reloadMin  = Math.max(1, parseInt(document.getElementById('af_reload_min')?.value) || CONFIG.minReloadMin);
+        const reloadMax  = Math.max(reloadMin, parseInt(document.getElementById('af_reload_max')?.value) || CONFIG.maxReloadMin);
 
         const cfg = {
             templateOnFull:    tplFull    || null,
             templateOnNotFull: tplNotFull || null,
+            groupId,
             minInterval:  minInt,
             randomExtra:  randExtra,
             minReloadMin: reloadMin,
             maxReloadMin: reloadMax,
+            villageSwitchDelay: CONFIG.villageSwitchDelay,
         };
-
-        const state = loadState();
-        state.config = cfg;
-        saveState(state);
+        patchState({ config: cfg });
         return cfg;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  AKCJE
+    //  AKCJE / ROTACJA — czyta wyłącznie cache listy wiosek
     // ═══════════════════════════════════════════════════════════════════════════
 
     let running = false;
     let autoTimer = null;
 
+    async function advanceAfterFarm(cfg, result, isAuto) {
+        // 1) Jest wojsko i kolejna strona farmy → przejdź na nią
+        const nextUrl = findNextPageUrl();
+        if (!result.outOfTroops && result.sent > 0 && nextUrl) {
+            patchState({ continuingRun: true });
+            setStatus(`Wysłano ${result.sent} | następna strona...`);
+            autoTimer = setTimeout(() => { window.location.href = nextUrl; }, 1000);
+            return;
+        }
+
+        // 2) Brak wojska LUB koniec stron → następna wioska z ZAPAMIĘTANEJ listy grupy
+        const villages = await getGroupVillages(cfg.groupId); // z cache, bez przestawiania grupy
+        const curId    = currentVillageId();
+
+        if (villages.length === 0) {
+            patchState({ continuingRun: false });
+            setStatus('Brak zapamiętanych wiosek grupy. Wybierz grupę w panelu.');
+            enableButtons();
+            return;
+        }
+
+        let idx = villages.indexOf(curId);
+        const next = (idx === -1) ? villages[0] : (villages[idx + 1] || null);
+
+        if (next && next !== curId) {
+            patchState({ continuingRun: true });
+            const reason = result.outOfTroops ? 'brak wojska' : 'koniec celów';
+            const pos = (idx === -1 ? 1 : idx + 2);
+            setStatus(`${reason} — wioska ${pos}/${villages.length}...`);
+            autoTimer = setTimeout(() => goToVillageFarm(next), cfg.villageSwitchDelay);
+            return;
+        }
+
+        // 3) Ostatnia wioska w grupie (idx to ostatni indeks, next === null)
+        if (!isAuto) {
+            patchState({ continuingRun: false });
+            setStatus(`Cykl grupy zakończony (${villages.length} wiosek).`);
+            enableButtons();
+            return;
+        }
+
+        // Auto — odczekaj losowy czas i wróć do pierwszej wioski grupy.
+        const first  = villages[0];
+        const minMs  = cfg.minReloadMin * 60 * 1000;
+        const maxMs  = cfg.maxReloadMin * 60 * 1000;
+        const waitMs = minMs + Math.floor(Math.random() * Math.max(0, maxMs - minMs));
+        const reloadAt = Date.now() + waitMs;
+
+        patchState({ reloadAt, restartVillage: first, continuingRun: false });
+        setStatus(`Grupa przejrzana | restart o ${msToTime(reloadAt)}`);
+        autoTimer = setTimeout(() => {
+            patchState({ reloadAt: 0 });
+            if (first && first !== currentVillageId()) goToVillageFarm(first);
+            else scheduleNextRun();
+        }, waitMs);
+    }
+
+    function enableButtons() {
+        const a = document.getElementById('afBtnOnce'); if (a) a.disabled = false;
+        const b = document.getElementById('afBtnAuto'); if (b) b.disabled = false;
+    }
+
     async function runOnce() {
         if (running) return;
         running = true;
-
         const btnOnce = document.getElementById('afBtnOnce');
         const btnAuto = document.getElementById('afBtnAuto');
         if (btnOnce) btnOnce.disabled = true;
         if (btnAuto) btnAuto.disabled = true;
 
         updateProgress(0, 1);
-
         const cfg = readConfig();
+        // Upewnij się, że mamy zapamiętaną listę wiosek grupy (pobierze raz jeśli trzeba)
+        await getGroupVillages(cfg.groupId);
         const result = await runFarm(cfg);
-
         updateProgress(1, 1);
         running = false;
 
-        // Paginacja: jeśli wysłano ataki i jest następna strona — przejdź dalej
-        const nextUrl = findNextPageUrl();
-        if (result.sent > 0 && nextUrl) {
-            const st = loadState();
-            st.continuingRun = true;
-            saveState(st);
-            setStatus(`Wysłano: ${result.sent} | przechodzę na następną stronę...`);
-            setTimeout(() => { window.location.href = nextUrl; }, 1000);
-            return;
-        }
-
-        // Ostatnia strona lub brak wojska — zakończ
-        const st = loadState();
-        st.continuingRun = false;
-        saveState(st);
-
-        setStatus(`Wysłano: ${result.sent} | Pominięto: ${result.skipped} | W drodze: ${result.disabled}`);
-        if (btnOnce) btnOnce.disabled = false;
-        if (btnAuto) btnAuto.disabled = false;
+        await advanceAfterFarm(cfg, result, false);
     }
 
     function toggleAuto() {
         const state = loadState();
-        state.autoEnabled = !state.autoEnabled;
-        saveState(state);
+        const enabling = !state.autoEnabled;
+        patchState({ autoEnabled: enabling });
 
         const btn = document.getElementById('afBtnAuto');
-        if (state.autoEnabled) {
+        if (enabling) {
             btn.textContent = 'Auto: ON';
             btn.classList.add('btn-on');
             scheduleNextRun();
@@ -452,51 +565,27 @@
             btn.textContent = 'Auto: OFF';
             btn.classList.remove('btn-on');
             if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+            patchState({ reloadAt: 0, continuingRun: false });
             setStatus('Auto wyłączone');
         }
     }
 
-    // Auto: po wysłaniu wszystkich ataków czeka losowy czas 8–30 minut i przeładowuje
     async function scheduleNextRun() {
         const state = loadState();
-        if (!state.autoEnabled) return;
-
-        if (running) return;
+        if (!state.autoEnabled || running) return;
         running = true;
-
         const btnOnce = document.getElementById('afBtnOnce');
         if (btnOnce) btnOnce.disabled = true;
 
         updateProgress(0, 1);
-
         const cfg = readConfig();
+        await getGroupVillages(cfg.groupId);
         const result = await runFarm(cfg);
-
         updateProgress(1, 1);
-
         running = false;
         if (btnOnce) btnOnce.disabled = false;
 
-        // Paginacja: jeśli wysłano ataki i jest następna strona — przejdź od razu
-        const nextUrl = findNextPageUrl();
-        if (result.sent > 0 && nextUrl) {
-            setStatus(`Wysłano: ${result.sent} | przechodzę na następną stronę...`);
-            autoTimer = setTimeout(() => { window.location.href = nextUrl; }, 1000);
-            return;
-        }
-
-        // Wszystkie strony przetworzone — wróć na stronę 1 po losowym czasie
-        const minMs  = cfg.minReloadMin * 60 * 1000;
-        const maxMs  = cfg.maxReloadMin * 60 * 1000;
-        const waitMs = minMs + Math.floor(Math.random() * (maxMs - minMs));
-
-        const page1Url = new URL(window.location.href);
-        page1Url.searchParams.delete('page');
-
-        const reloadAt = msToTime(Date.now() + waitMs);
-        setStatus(`Wysłano: ${result.sent} | reload o ${reloadAt}`);
-
-        autoTimer = setTimeout(() => { window.location.href = page1Url.toString(); }, waitMs);
+        await advanceAfterFarm(cfg, result, true);
     }
 
     function msToTime(ts) {
@@ -505,18 +594,12 @@
     }
 
     function findNextPageUrl() {
-        // Aktualna strona: <strong class="paged-nav-item">
-        // Następne strony:  <a class="paged-nav-item" href="...&Farm_page=N">
         const items = Array.from(document.querySelectorAll('.paged-nav-item'));
         const currentIdx = items.findIndex(el => el.tagName === 'STRONG');
         if (currentIdx === -1) return null;
         const next = items[currentIdx + 1];
         return (next && next.tagName === 'A') ? next.href : null;
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
 
     function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -526,22 +609,32 @@
 
     async function init() {
         injectStyles();
-        createPanel();
+        await createPanel();
+
+        // Sprzątanie po starszych wersjach: jeśli w grze jest zaznaczona jakaś grupa,
+        // przywróć 0 (Wszystkie), żeby interfejs nie został z wymuszoną grupą.
+        if (activeGroupId() !== '0') {
+            await resetActiveGroup();
+        }
 
         await delay(CONFIG.pageLoadDelay);
 
-        // Policz wioski na liście i pokaż w statusie
         const rows = document.querySelectorAll('tr[id^="village_"]');
-        setStatus(`Wiosek na liście: ${rows.length}`);
+        setStatus(`Celów na liście: ${rows.length}`);
 
-        // Wznów po przeładowaniu strony
         const state = loadState();
+
         if (state.autoEnabled) {
-            scheduleNextRun();
+            if (state.reloadAt && Date.now() < state.reloadAt) {
+                const wait = state.reloadAt - Date.now();
+                setStatus(`Auto: czekam do ${msToTime(state.reloadAt)}`);
+                autoTimer = setTimeout(() => { patchState({ reloadAt: 0 }); scheduleNextRun(); }, wait);
+            } else {
+                patchState({ reloadAt: 0 });
+                scheduleNextRun();
+            }
         } else if (state.continuingRun) {
-            // "Wyślij raz" kontynuuje przez kolejne strony
-            state.continuingRun = false;
-            saveState(state);
+            patchState({ continuingRun: false });
             runOnce();
         }
     }
