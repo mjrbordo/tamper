@@ -6,6 +6,8 @@
 // @author       Bordo
 // @match        https://*.plemiona.pl/*mode=scavenge_mass*
 // @match        https://*.tribalwars.co.uk/*&mode=scavenge*
+// @updateURL    https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/aut_mass_scav_groups.user.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/aut_mass_scav_groups.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // ==/UserScript==
