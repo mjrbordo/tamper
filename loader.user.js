@@ -11,6 +11,7 @@
 // @require      https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/kolorowanie_zagrody.user.js
 // @require      https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/rozpiska_rozsyłanie.user.js
 // @require      https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/farma_auto.user.js
+// @require      https://cdn.jsdelivr.net/gh/mjrbordo/tamper@main/aut_mass_scav_groups.user.js
 // ==/UserScript==
 
 // Skrypt celowo pusty — całą robotę robią @require powyżej
