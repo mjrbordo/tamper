@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Farm V3
 // @namespace    http://tampermonkey.net/
-// @version      3.1.0
+// @version      3.1.2
 // @description  Automatyczne farmienie w Plemionach — szablon wg wyniku ostatniego ataku, rotacja po zapamiętanych wioskach grupy BEZ zmiany aktywnej grupy w grze, stop przy braku wojska
 // @updateURL    https://raw.githubusercontent.com/mjrbordo/tamper/main/farma_auto.user.js
 // @downloadURL  https://raw.githubusercontent.com/mjrbordo/tamper/main/farma_auto.user.js
@@ -65,20 +65,48 @@
         } catch (e) { console.error('[AutoFarm] resetActiveGroup error:', e); }
     }
 
-    // Lista grup: [{id, name}] — z <option> strony mode=groups.
-    // Ta strona NIE przyjmuje group=, więc nie zmienia aktywnej grupy.
+    // Lista grup: [{id, name}].
+    // Podstawowe źródło: endpoint AJAX gry (load_group_menu) — zwraca JSON.
+    // Fallback: stary HTML <select id="group_id"> na starszych światach.
+    // Żadne z tych źródeł nie przestawia aktywnej grupy w grze.
     async function fetchGroups() {
+        const seen = new Set();
+        const dedupe = (arr) => arr.filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)));
+
+        // 1) Endpoint AJAX (nowe światy)
+        try {
+            const h = window.game_data && window.game_data.csrf;
+            const url = `/game.php?screen=groups&ajax=load_group_menu${h ? `&h=${h}` : ''}`;
+            const res = await fetch(url, {
+                credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest', 'TribalWars-Ajax': '1' }
+            });
+            const data = await res.json();
+            const raw = (data && ((data.response && data.response.result) || data.result)) || [];
+            const groups = raw
+                .map(g => ({ id: String(g.group_id ?? (g.group && g.group.id) ?? ''), name: String(g.name || '').trim() }))
+                .filter(g => g.id && g.id !== '0' && g.name);
+            if (groups.length) return dedupe(groups);
+        } catch (e) {
+            console.warn('[AutoFarm] fetchGroups (ajax) nie zadziałał, próbuję HTML:', e);
+        }
+
+        // 2) Fallback: HTML <select id="group_id"> ze strony mode=groups
         try {
             const html = await (await fetch('/game.php?screen=overview_villages&mode=groups', { credentials: 'same-origin' })).text();
-            const groups = [...html.matchAll(/<option[^>]*value=["']?(\d+)["']?[^>]*>([^<]+)<\/option>/g)]
-                .map(m => ({ id: m[1], name: m[2].trim() }))
-                .filter(g => g.id && g.name);
-            const seen = new Set();
-            return groups.filter(g => (seen.has(g.id) ? false : (seen.add(g.id), true)));
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const sel = doc.querySelector('select#group_id, select[name="group_id"]');
+            if (sel) {
+                const groups = [...sel.querySelectorAll('option')]
+                    .map(o => ({ id: String(o.value).trim(), name: (o.textContent || '').trim() }))
+                    .filter(g => g.id && g.id !== '0' && g.name && /^\d+$/.test(g.id));
+                if (groups.length) return dedupe(groups);
+            }
         } catch (e) {
-            console.error('[AutoFarm] fetchGroups error:', e);
-            return [];
+            console.error('[AutoFarm] fetchGroups (html) error:', e);
         }
+
+        return [];
     }
 
     // Pobiera wioski grupy JEDEN RAZ i od razu przywraca group=0.
