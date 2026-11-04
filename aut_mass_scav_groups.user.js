@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Mass Scavenge Auto (per grupa)
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
-// @description  Automatyzuje masowe zbieractwo w Plemionach — osobne ustawienia i harmonogram per grupa wiosek
+// @version      2.1.0
+// @description  Automatyzuje masowe zbieractwo w Plemionach — osobne ustawienia i harmonogram per grupa wiosek, obsługa wielu stron w grupie
 // @author       Bordo
 // @match        https://*.plemiona.pl/*mode=scavenge_mass*
 // @match        https://*.tribalwars.co.uk/*&mode=scavenge*
@@ -28,10 +28,13 @@
 
     const DEFAULT_LEVELS = { 1: true, 2: true, 3: true, 4: true };
 
-    const BUFFER_MINUTES  = 2;
-    const PAGE_LOAD_DELAY = 3000;
-    const NO_GROUP_ID     = '0';
-    const NO_GROUP_NAME   = 'Bez grupy (wszystkie wioski)';
+    const BUFFER_MINUTES      = 2;
+    const EMPTY_RETRY_MINUTES = 5;               // gdy w grupie nic nie wróciło/nie poszło
+    const PAGE_LOAD_DELAY     = 3000;
+    const RUN_TIMEOUT_MS      = 20 * 60 * 1000;  // bezpiecznik: przebieg dłuższy niż 20 min jest przerywany
+    const MAX_NAV_TRIES       = 3;               // ile razy próbujemy trafić w daną grupę/stronę zanim ją pominiemy
+    const NO_GROUP_ID         = '0';
+    const NO_GROUP_NAME       = 'Bez grupy (wszystkie wioski)';
 
     const UNIT_LABELS = {
         spear: 'Pikinier', sword: 'Miecznik', axe: 'Topornik',
@@ -46,8 +49,7 @@
     //  STORAGE (GM_* z fallbackiem do localStorage)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Klucz musi być per-świat — @match łapie całą domenę plemiona.pl, więc bez tego
-    // grupy/ustawienia z różnych światów (pl180, pl231, itd.) mieszałyby się w jednym worku.
+    // Klucz per-świat — @match łapie całą domenę, bez tego światy by się mieszały.
     function getWorldId() {
         try {
             return (window.game_data && game_data.world) || window.location.hostname;
@@ -57,7 +59,7 @@
     }
 
     const STORAGE_KEY     = `massScavAutoV2_${getWorldId()}`;
-    const OLD_STORAGE_KEY = 'massScavAuto'; // v1, do migracji jednorazowej (był globalny, bez podziału na światy)
+    const OLD_STORAGE_KEY = 'massScavAuto'; // v1, do migracji jednorazowej
 
     function gmAvailable() {
         return typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
@@ -83,7 +85,6 @@
         }
     }
 
-    // Jednorazowa migracja starego globalnego configu (v1) do grupy "Bez grupy"
     function migrateOldConfig(state) {
         if (state.migratedV1) return;
         try {
@@ -99,12 +100,13 @@
                     state.groups[NO_GROUP_ID].levels = old.levels || { ...DEFAULT_LEVELS };
                 }
             }
-        } catch (e) { /* brak starego configu, nic się nie dzieje */ }
+        } catch (e) { /* brak starego configu */ }
         state.migratedV1 = true;
+        delete state.manualPending; // pozostałość po 2.0.x, zastąpiona przez state.run
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  GRUPY WIOSEK (z gry, przez TribalWars.get)
+    //  GRUPY WIOSEK I STRONICOWANIE
     // ═══════════════════════════════════════════════════════════════════════════
 
     function fetchGroupsList() {
@@ -143,29 +145,54 @@
                     inRotation: false,
                 };
             } else {
-                state.groups[gid].name = g.name; // odśwież nazwę, gdyby zmieniona w grze
+                state.groups[gid].name = g.name;
             }
         }
     }
 
-    // WAŻNE: nie polegamy na game_data.group_id — to osobny, wewnętrzny stan gry,
-    // który nie musi odzwierciedlać parametru &group= w URL. Czytamy bezpośrednio
-    // z adresu strony, bo to jedyne źródło, które sami kontrolujemy i wiemy, że
-    // faktycznie filtruje tabelę (potwierdzone ręcznym testem).
+    // Aktywna grupa = pogrubiony element w menu grup, renderowany przez serwer dla
+    // faktycznie zastosowanego filtra. Gra pamięta grupę w sesji (linki stronicowania
+    // nie mają &group=), więc sam URL nie wystarcza. URL jest tylko fallbackiem.
     function getCurrentGroupId() {
+        const sel = document.querySelector('strong.group-menu-item[data-group-id]');
+        if (sel) return String(sel.dataset.groupId);
         const params = new URLSearchParams(window.location.search);
         return params.get('group') || NO_GROUP_ID;
     }
 
-    function buildGroupUrl(groupId) {
+    // Strony liczone od 0 (link "[2]" ma page=1). Bieżąca strona to <strong> >N< w pasku.
+    // hasNext liczymy z widocznych linków, więc działa też przy "okienkowym" pasku stron.
+    function getPageInfo() {
+        const links = document.querySelectorAll('a.paged-nav-item');
+        let maxLinked = -1;
+        links.forEach((a) => {
+            const p = parseInt(new URL(a.href, window.location.href).searchParams.get('page'), 10);
+            if (!isNaN(p) && p > maxLinked) maxLinked = p;
+        });
+
+        let current = 0;
+        const strong = links.length ? links[0].parentElement.querySelector('strong') : null;
+        if (strong) {
+            const m = strong.textContent.match(/\d+/);
+            if (m) current = parseInt(m[0], 10) - 1;
+        } else {
+            current = parseInt(new URLSearchParams(window.location.search).get('page'), 10) || 0;
+        }
+
+        return { current, hasNext: maxLinked > current };
+    }
+
+    // Zawsze ustawiamy group jawnie (także 0 = wszystkie) — inaczej gra użyje grupy z sesji.
+    function buildViewUrl(groupId, page) {
         const url = new URL(window.location.href);
-        if (groupId && groupId !== NO_GROUP_ID) url.searchParams.set('group', groupId);
-        else url.searchParams.delete('group');
+        url.searchParams.set('group', String(groupId || NO_GROUP_ID));
+        url.searchParams.set('page', String(page || 0));
+        url.hash = '';
         return url.toString();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  ODCZYT DANYCH WIOSEK (bez zmian względem oryginału)
+    //  ODCZYT DANYCH WIOSEK
     // ═══════════════════════════════════════════════════════════════════════════
 
     function parseVillagesFromHTML(htmlText) {
@@ -240,17 +267,17 @@
         return null;
     }
 
-    async function getVillagesData() {
-        const fromDOM = parseVillagesFromDOM();
-        if (fromDOM) {
-            console.log('[MSA] Dane wiosek z DOM, wiosek:', fromDOM.length);
-            return fromDOM;
+    // preferFresh=true: po wysyłce DOM ma stare dane (sprzed kliknięcia), więc pobieramy stronę na nowo
+    async function getVillagesData(preferFresh = false) {
+        if (preferFresh) {
+            const fromFetch = await fetchVillagesData();
+            if (fromFetch) return fromFetch;
         }
-        console.log('[MSA] DOM nie zawiera danych, próbuję fetch...');
-        const fromFetch = await fetchVillagesData();
-        if (fromFetch) {
-            console.log('[MSA] Dane wiosek z fetch, wiosek:', fromFetch.length);
-            return fromFetch;
+        const fromDOM = parseVillagesFromDOM();
+        if (fromDOM) return fromDOM;
+        if (!preferFresh) {
+            const fromFetch = await fetchVillagesData();
+            if (fromFetch) return fromFetch;
         }
         console.warn('[MSA] Nie udało się pobrać danych wiosek żadną metodą');
         return [];
@@ -343,6 +370,11 @@
         if (state.autoEnabled) btnAuto.classList.add('btn-on');
         btnAuto.onclick = toggleAuto;
         globalRow.appendChild(btnAuto);
+
+        const btnStop = document.createElement('button');
+        btnStop.textContent = 'Przerwij przebieg';
+        btnStop.onclick = abortRunManually;
+        globalRow.appendChild(btnStop);
         p.appendChild(globalRow);
 
         p.appendChild(Object.assign(document.createElement('div'), {
@@ -410,7 +442,7 @@
 
         const sendBtn = document.createElement('button');
         sendBtn.className = 'btn-send-group';
-        sendBtn.textContent = gid === currentGid ? 'Wyślij teraz' : 'Przełącz i wyślij';
+        sendBtn.textContent = 'Wyślij (wszystkie strony grupy)';
         sendBtn.onclick = () => manualSendGroup(gid);
         body.appendChild(sendBtn);
 
@@ -446,7 +478,6 @@
         if (el) el.textContent = ts ? formatNextRun(ts) : '';
     }
 
-    // Wczytuje wartości z panelu (dla danej grupy) i zapisuje do state
     function readGroupConfigFromPanel(gid, state) {
         const units = {};
         for (const unit of Object.keys(UNIT_LABELS)) {
@@ -476,7 +507,7 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  HELPERS WYSYŁKI
+    //  WYSYŁKA NA BIEŻĄCEJ STRONIE
     // ═══════════════════════════════════════════════════════════════════════════
 
     function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -488,12 +519,12 @@
         input.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
-    // Wysyła zbieractwo dla podanej grupy — ZAKŁADA że strona jest już przefiltrowana
-    // do tej grupy (getCurrentGroupId() === gid), inaczej select-all-col zaznaczy
-    // wszystkie wioski na koncie, nie tylko tej grupy.
-    async function executeSendForGroup(gid, state) {
+    // Wysyła zbieractwo dla wiosek widocznych na BIEŻĄCEJ stronie (strona musi być
+    // przefiltrowana do grupy gid). Zwraca najwcześniejszy return_time (unix s) na tej stronie lub null.
+    async function sendOnCurrentPage(gid, state, pageLabel) {
         const cfg = state.groups[gid] || { units: { ...DEFAULT_UNITS }, levels: { ...DEFAULT_LEVELS } };
-        setGlobalStatus(`Wysyłam dla grupy: ${cfg.name || gid}`);
+        const name = cfg.name || gid;
+        setGlobalStatus(`Wysyłam: ${name}, strona ${pageLabel}`);
 
         for (const [unit, count] of Object.entries(cfg.units || {})) {
             if (!count || count <= 0) continue;
@@ -511,25 +542,26 @@
             clicked++;
         }
 
+        let sent = false;
         if (clicked > 0) {
             await delay(400);
             const sendBtn = document.querySelector('#scavenge_mass_screen a.btn.btn-send:not([disabled])');
             if (sendBtn) {
                 sendBtn.click();
-                setGlobalStatus(`Wysłano! Grupa: ${cfg.name || gid} (${clicked} poziomy)`);
+                sent = true;
+                setGlobalStatus(`Wysłano: ${name}, strona ${pageLabel} (${clicked} poziomy)`);
             } else {
-                setGlobalStatus('Brak przycisku "Wyślij" — sprawdź jednostki');
+                setGlobalStatus(`${name}, strona ${pageLabel}: brak aktywnego "Wyślij"`);
             }
         } else {
-            setGlobalStatus(`Grupa ${cfg.name || gid}: wszystkie poziomy w trakcie`);
+            setGlobalStatus(`${name}, strona ${pageLabel}: wszystkie poziomy w trakcie`);
         }
 
-        // Policz kolejny return_time DLA TEJ GRUPY (strona wciąż przefiltrowana)
-        await delay(1500);
-        const villages = await getVillagesData();
-        const bufSec  = BUFFER_MINUTES * 60;
-        const nowSec  = Math.floor(Date.now() / 1000);
-        let earliestAfter = null;
+        // Świeże dane (po wysyłce DOM jest nieaktualny)
+        await delay(sent ? 2000 : 300);
+        const villages = await getVillagesData(sent);
+        const nowSec = Math.floor(Date.now() / 1000);
+        let earliest = null;
 
         for (const v of villages) {
             if (!v.options) continue;
@@ -537,36 +569,146 @@
                 if (!cfg.levels || !cfg.levels[String(lvlId)]) continue;
                 const squad = optData.scavenging_squad;
                 if (!squad || !squad.return_time) continue;
-                if (squad.return_time > nowSec && (!earliestAfter || squad.return_time < earliestAfter)) {
-                    earliestAfter = squad.return_time;
+                if (squad.return_time > nowSec && (!earliest || squad.return_time < earliest)) {
+                    earliest = squad.return_time;
                 }
             }
         }
-
-        const nextTs = earliestAfter ? earliestAfter + bufSec : nowSec + 120;
-        state.schedule = state.schedule || {};
-        state.schedule[gid] = nextTs;
-        saveState(state);
-        setGroupNext(gid, nextTs);
+        return earliest;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  WYSYŁKA RĘCZNA (przycisk per grupa)
+    //  PRZEBIEG: kolejka grup × strony, na końcu powrót do "wszystkie"
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // state.run = { queue: [gid...], idx, page, earliest: {gid: ts}, manual, startedAt, navTries }
+    // Każde przeładowanie strony wznawia przebieg w init() przez processRun().
+
+    function newRun(queue, manual) {
+        return {
+            queue: queue.map(String), idx: 0, page: 0,
+            earliest: {}, manual: !!manual,
+            startedAt: Date.now(), navTries: 0,
+        };
+    }
+
+    function finalizeGroupSchedule(state, gid) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const earliest = state.run.earliest[gid];
+        const nextTs = earliest
+            ? earliest + BUFFER_MINUTES * 60
+            : nowSec + EMPTY_RETRY_MINUTES * 60;
+        state.schedule = state.schedule || {};
+        state.schedule[gid] = nextTs;
+        setGroupNext(gid, nextTs);
+    }
+
+    function goToAllAndFinish(state, msg) {
+        state.run = null;
+        saveState(state);
+        setGlobalStatus(msg || 'Przebieg zakończony — wracam do "wszystkie"');
+        window.location.href = buildViewUrl(NO_GROUP_ID, 0);
+    }
+
+    // Zwraca true, jeśli zainicjowano nawigację (strona zaraz się przeładuje).
+    async function processRun(state) {
+        const run = state.run;
+        if (!run) return false;
+
+        if (Date.now() - run.startedAt > RUN_TIMEOUT_MS) {
+            console.warn('[MSA] Przebieg przekroczył limit czasu — przerywam');
+            goToAllAndFinish(state, 'Przebieg przerwany (limit czasu)');
+            return true;
+        }
+        if (!run.manual && !state.autoEnabled) {
+            state.run = null;
+            saveState(state);
+            return false;
+        }
+        if (run.idx >= run.queue.length) {
+            goToAllAndFinish(state);
+            return true;
+        }
+
+        const gid  = run.queue[run.idx];
+        const name = state.groups[gid]?.name || gid;
+        const pi   = getPageInfo();
+
+        // Nie jesteśmy na właściwej grupie/stronie → nawiguj (z limitem prób)
+        if (getCurrentGroupId() !== gid || pi.current !== run.page) {
+            run.navTries = (run.navTries || 0) + 1;
+            if (run.navTries > MAX_NAV_TRIES) {
+                console.warn(`[MSA] Nie udało się otworzyć grupy ${name}, strona ${run.page + 1} — pomijam resztę grupy`);
+                finalizeGroupSchedule(state, gid);
+                run.idx++;
+                run.page = 0;
+                run.navTries = 0;
+                saveState(state);
+                return processRun(state);
+            }
+            saveState(state);
+            setGlobalStatus(`Przechodzę: ${name}, strona ${run.page + 1}`);
+            window.location.href = buildViewUrl(gid, run.page);
+            return true;
+        }
+
+        run.navTries = 0;
+        saveState(state);
+
+        const earliest = await sendOnCurrentPage(gid, state, run.page + 1);
+
+        // Stan mógł się zmienić w trakcie (np. przerwanie z panelu) — odśwież
+        const fresh = loadState();
+        if (!fresh.run) return false;
+        state = fresh;
+        const r = state.run;
+
+        if (earliest && (!r.earliest[gid] || earliest < r.earliest[gid])) {
+            r.earliest[gid] = earliest;
+        }
+
+        if (pi.hasNext) {
+            r.page++;
+        } else {
+            finalizeGroupSchedule(state, gid);
+            r.idx++;
+            r.page = 0;
+        }
+        saveState(state);
+        await delay(500);
+
+        if (r.idx >= r.queue.length) {
+            goToAllAndFinish(state);
+        } else {
+            const nextGid = r.queue[r.idx];
+            setGlobalStatus(`Dalej: ${state.groups[nextGid]?.name || nextGid}, strona ${r.page + 1}`);
+            window.location.href = buildViewUrl(nextGid, r.page);
+        }
+        return true;
+    }
+
+    function abortRunManually() {
+        const state = loadState();
+        if (!state.run) { setGlobalStatus('Brak aktywnego przebiegu'); return; }
+        state.run = null;
+        saveState(state);
+        setGlobalStatus('Przebieg przerwany');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  WYSYŁKA RĘCZNA (przycisk per grupa — wszystkie strony)
     // ═══════════════════════════════════════════════════════════════════════════
 
     async function manualSendGroup(gid) {
         const state = loadState();
-        readGroupConfigFromPanel(gid, state);
-
-        if (getCurrentGroupId() !== String(gid)) {
-            state.manualPending = gid;
-            saveState(state);
-            setGlobalStatus('Przełączam widok na grupę...');
-            window.location.href = buildGroupUrl(gid);
+        if (state.run) {
+            setGlobalStatus('Trwa już przebieg — poczekaj albo go przerwij');
             return;
         }
-
-        await executeSendForGroup(gid, state);
+        readGroupConfigFromPanel(gid, state);
+        state.run = newRun([gid], true);
+        saveState(state);
+        await processRun(state);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -579,15 +721,17 @@
         const state = loadState();
         saveAllPanelConfigs(state);
         state.autoEnabled = !state.autoEnabled;
-        saveState(state);
 
         const btn = document.getElementById('msaBtnAuto');
         if (state.autoEnabled) {
+            saveState(state);
             btn.textContent = 'Auto-rotacja: ON';
             btn.classList.add('btn-on');
             autoRunning = true;
             autoStep();
         } else {
+            if (state.run && !state.run.manual) state.run = null;
+            saveState(state);
             btn.textContent = 'Auto-rotacja: OFF';
             btn.classList.remove('btn-on');
             autoRunning = false;
@@ -598,6 +742,7 @@
     async function autoStep() {
         const state = loadState();
         if (!state.autoEnabled) { autoRunning = false; return; }
+        if (state.run) return; // przebieg obsługuje init()/processRun()
 
         const active = Object.keys(state.groups).filter((gid) => state.groups[gid].inRotation);
         if (!active.length) {
@@ -606,40 +751,30 @@
         }
 
         const now = Math.floor(Date.now() / 1000);
-        let due = null, dueTs = Infinity, nextFuture = Infinity;
+        const sched = state.schedule || {};
+        const tsOf = (gid) => sched[gid] || 0;
 
-        for (const gid of active) {
-            const ts = (state.schedule || {})[gid] || 0;
-            if (ts <= now) {
-                if (ts < dueTs) { due = gid; dueTs = ts; }
-            } else if (ts < nextFuture) {
-                nextFuture = ts;
-            }
-        }
+        // Wszystkie grupy, którym minął termin — jedna po drugiej w jednym przebiegu
+        const due = active.filter((gid) => tsOf(gid) <= now).sort((a, b) => tsOf(a) - tsOf(b));
 
-        if (due === null) {
-            setGlobalStatus('Auto: czekam na najbliższą grupę w kolejce');
-            const targetTs = nextFuture === Infinity ? (now + 120) : nextFuture;
-            const sleepUntil = Date.now() + Math.max(targetTs * 1000 - Date.now(), 5000);
-
-            while (autoRunning && Date.now() < sleepUntil) {
-                await delay(Math.min(30000, sleepUntil - Date.now()));
-                const s2 = loadState();
-                if (!s2.autoEnabled) { autoRunning = false; return; }
-            }
-            if (!autoRunning) return;
-            window.location.reload();
+        if (due.length) {
+            state.run = newRun(due, false);
+            saveState(state);
+            await processRun(state);
             return;
         }
 
-        if (getCurrentGroupId() !== String(due)) {
-            setGlobalStatus(`Przełączam widok na grupę: ${state.groups[due]?.name || due}`);
-            window.location.href = buildGroupUrl(due);
-            return;
-        }
+        const nextFuture = Math.min(...active.map(tsOf));
+        setGlobalStatus('Auto: czekam na najbliższą grupę w kolejce');
+        const sleepUntil = Date.now() + Math.max(nextFuture * 1000 - Date.now(), 5000);
 
-        await executeSendForGroup(due, state);
-        await delay(500);
+        while (autoRunning && Date.now() < sleepUntil) {
+            await delay(Math.min(30000, sleepUntil - Date.now()));
+            const s2 = loadState();
+            if (!s2.autoEnabled) { autoRunning = false; return; }
+            if (s2.run) return; // ktoś uruchomił przebieg ręcznie
+        }
+        if (!autoRunning) return;
         window.location.reload();
     }
 
@@ -662,20 +797,20 @@
         await delay(PAGE_LOAD_DELAY);
 
         const villages = await getVillagesData();
+        const pi = getPageInfo();
         if (villages.length > 0) {
-            setGlobalStatus(`OK — wiosek w tym widoku: ${villages.length}`);
+            setGlobalStatus(`OK — wiosek na stronie ${pi.current + 1}: ${villages.length}`);
         } else {
             setGlobalStatus('⚠ Nie można odczytać danych wiosek');
         }
 
-        // Jednorazowa wysyłka ręczna, jeśli czekała na przełączenie grupy
-        if (state.manualPending && String(state.manualPending) === getCurrentGroupId()) {
-            const gid = state.manualPending;
-            state.manualPending = null;
-            saveState(state);
-            await executeSendForGroup(gid, state);
+        state = loadState();
+        if (state.run) {
+            const navigated = await processRun(state);
+            if (navigated) return;
         }
 
+        state = loadState();
         if (state.autoEnabled) {
             autoRunning = true;
             autoStep();
