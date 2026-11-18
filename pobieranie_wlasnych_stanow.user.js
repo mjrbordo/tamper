@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plemiona – eksport stanów wojsk (w wiosce)
 // @namespace    mjrbordo/tamper
-// @version      1.0.0
+// @version      1.0.1
 // @description  Przegląd wojsk -> "w wiosce" -> format XXX|YYY,jednostki...,0,0
 // @match        https://*.plemiona.pl/game.php*screen=overview_villages*
 // @grant        none
@@ -12,7 +12,7 @@
     'use strict';
 
     // ---------------- KONFIGURACJA ----------------
-    const ROW_LABEL   = 'w wiosce'; // 'własne' | 'w wiosce' | 'poza wioską' | 'w drodze' | 'razem'
+    const ROW_LABEL   = 'w wiosce'; // który wiersz brać: 'własne' | 'w wiosce' | 'poza wioską' | 'w drodze' | 'razem'
     const EXTRA_ZEROS = 2;          // zera doklejane na końcu (symulacja skryptu Zbiórka wojska)
     const SKIP_UNITS  = [];         // np. ['knight'] jeśli format ma pominąć rycerza
     // ----------------------------------------------
@@ -61,7 +61,7 @@
                 .map(x => x.v);
 
             for (let i = 0; i < EXTRA_ZEROS; i++) values.push(0);
-            lines.push(`${coords[1]}|${coords[2]},${values.join(',')}`);
+            lines.push(`${coords[1]}|${coords[2]},${values.join(",")},`);
         });
         return { units: units.filter(u => !SKIP_UNITS.includes(u)), lines };
     }
@@ -85,7 +85,7 @@
 
         const info = document.createElement('div');
         info.style.cssText = 'color:#555;margin-bottom:4px';
-        info.textContent = 'Kolejność: XXX|YYY,' + res.units.join(',') + ',0'.repeat(EXTRA_ZEROS);
+        info.textContent = 'Kolejność: XXX|YYY,' + res.units.join(',') + ',0'.repeat(EXTRA_ZEROS) + ',';
 
         const ta = document.createElement('textarea');
         ta.style.cssText = 'width:100%;height:320px;font:11px monospace';
